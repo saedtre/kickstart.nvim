@@ -134,6 +134,10 @@ do
   vim.o.ignorecase = true
   vim.o.smartcase = true
 
+  -- Don't keep search matches highlighted after a search (equivalent to `:set nohlsearch`).
+  -- 'incsearch' (on by default) still highlights the match while you type the pattern.
+  vim.o.hlsearch = false
+
   -- Keep signcolumn on by default
   vim.o.signcolumn = 'yes'
 
@@ -163,6 +167,9 @@ do
 
   -- Show which line your cursor is on
   vim.o.cursorline = true
+
+  -- Show a column marker at column 80
+  vim.o.colorcolumn = '80'
 
   -- Minimal number of screen lines to keep above and below the cursor.
   vim.o.scrolloff = 10
@@ -194,7 +201,12 @@ do
     underline = { severity = { min = vim.diagnostic.severity.WARN } },
 
     -- Can switch between these as you prefer
-    virtual_text = true, -- Text shows up at the end of the line
+    -- Inline diagnostics: show the message at the end of the offending line
+    virtual_text = {
+      source = 'if_many', -- Prefix with the LSP name when several are attached
+      spacing = 2,
+      prefix = '●',
+    },
     virtual_lines = false, -- Text shows up underneath the line, with virtual lines
 
     -- Auto open the float, so you can easily read the errors when jumping with `[d` and `]d`
@@ -210,6 +222,9 @@ do
   }
 
   vim.keymap.set('n', '<leader>q', vim.diagnostic.setloclist, { desc = 'Open diagnostic [Q]uickfix list' })
+
+  -- Open Netrw in the directory of the current file (cursor lands on that file)
+  vim.keymap.set('n', '<leader>pv', vim.cmd.Ex, { desc = '[P]roject [V]iew (Netrw)' })
 
   -- Exit terminal mode in the builtin terminal with a shortcut that is a bit easier
   -- for people to discover. Otherwise, you normally need to press <C-\><C-n>, which
@@ -412,8 +427,13 @@ do
     spec = {
       { '<leader>s', group = '[S]earch', mode = { 'n', 'v' } },
       { '<leader>t', group = '[T]oggle' },
+      { '<leader>p', group = '[P]roject' },
+      { '<leader>c', group = '[C]/C++ & CMake' },
       { '<leader>h', group = 'Git [H]unk', mode = { 'n', 'v' } }, -- Enable gitsigns recommended keymaps first
       { 'gr', group = 'LSP Actions', mode = { 'n' } },
+      -- Neovim's default description for `gx` is very long, which forces the `g` popup into a single
+      -- column that overflows shorter windows and hides entries (such as the `gr` group) below the fold.
+      { 'gx', desc = 'Open file/URI under cursor', mode = { 'n', 'x' } },
     },
   }
 
@@ -423,21 +443,19 @@ do
   -- change the command under that to load whatever the name of that colorscheme is.
   --
   -- If you want to see what colorschemes are already installed, you can use `:Telescope colorscheme`.
-  vim.pack.add { gh 'folke/tokyonight.nvim' }
+  vim.pack.add { gh 'ellisonleao/gruvbox.nvim' }
   ---@diagnostic disable-next-line: missing-fields
-  require('tokyonight').setup {
-    transparent = true,
-    styles = {
-      comments = { italic = true}, -- Disable italics in comments
-      sidebars = 'transparent',
-      floats = 'transparent',
+  require('gruvbox').setup {
+    transparent_mode = true,
+    italic = {
+      comments = true,
     },
   }
 
   -- Load the colorscheme here.
-  -- Like many other themes, this one has different styles, and you could load
-  -- any other, such as 'tokyonight-storm', 'tokyonight-moon', or 'tokyonight-day'.
-  vim.cmd.colorscheme 'tokyonight-moon'
+  -- Gruvbox follows 'background', so set it to 'light' for the light variant.
+  vim.o.background = 'dark'
+  vim.cmd.colorscheme 'gruvbox'
 
   -- Highlight todo, notes, etc in comments
   vim.pack.add { gh 'folke/todo-comments.nvim' }
@@ -726,6 +744,8 @@ do
       --
       -- This may be unwanted, since they displace some of your code
       if client and client:supports_method('textDocument/inlayHint', event.buf) then
+        -- Show inlay hints (types, parameter names, etc.) by default
+        vim.lsp.inlay_hint.enable(true, { bufnr = event.buf })
         map('<leader>th', function() vim.lsp.inlay_hint.enable(not vim.lsp.inlay_hint.is_enabled { bufnr = event.buf }) end, '[T]oggle Inlay [H]ints')
       end
     end,
@@ -736,7 +756,41 @@ do
   --  See `:help lsp-config` for information about keys and how to configure
   ---@type table<string, vim.lsp.Config>
   local servers = {
-    -- clangd = {},
+    -- C/C++. Reads build flags from compile_commands.json (CMake: -DCMAKE_EXPORT_COMPILE_COMMANDS=ON,
+    -- which :CMakeConfigure sets; Make: `bear -- make`). Formats with .clang-format, or LLVM style if absent.
+    clangd = {
+      -- Prefer the repo root (.git) over the *nearest* compile_commands.json. lspconfig's default order
+      -- picks whichever compile_commands.json is closest to the file, so a stray one in a subdirectory
+      -- (e.g. chapter04/) gives that subdirectory its own clangd server, separate from the one used for
+      -- shared headers in ../include: split index, broken cross-directory references.
+      root_markers = { '.clangd', '.git', 'compile_commands.json', 'compile_flags.txt', 'configure.ac' },
+      -- clangd looks up compile_commands.json itself (nearest parent of each file), regardless of the
+      -- LSP root. When the root has one, point clangd at it so nested databases can't shadow it.
+      cmd = function(dispatchers, config)
+        local cmd = {
+          'clangd',
+          '--background-index', -- Index the whole project, not just open files
+          '--clang-tidy', -- clang-tidy warnings as inline diagnostics (configure via .clang-tidy)
+          '--header-insertion=iwyu', -- Completion inserts the #include you need
+          '--completion-style=detailed',
+          '--function-arg-placeholders',
+          '--query-driver=/usr/bin/gcc,/usr/bin/g++', -- Let clangd find GCC's standard library headers
+        }
+        local root = config.root_dir
+        if root and vim.uv.fs_stat(root .. '/compile_commands.json') then
+          table.insert(cmd, '--compile-commands-dir=' .. root)
+        end
+        return vim.lsp.rpc.start(cmd, dispatchers, { cwd = config.cmd_cwd, env = config.cmd_env, detached = config.detached })
+      end,
+      -- NOTE: Don't set `init_options.fallbackFlags` here: they apply to C and C++ files alike, so a
+      -- `-std=c++20` breaks every C file without a compile_commands.json entry. Without them clangd picks
+      -- the language standard from the file extension. Set the standard per project instead
+      -- (CMAKE_C_STANDARD / CMAKE_CXX_STANDARD, or a .clangd file).
+    },
+
+    -- CMake: completion, hover, go-to-definition, diagnostics and formatting
+    neocmake = {},
+
     -- gopls = {},
     -- pyright = {},
     -- tsc = {},
@@ -745,7 +799,16 @@ do
     --    https://github.com/mrcjkb/rustaceanvim
     --
     -- But for many setups, the LSP (`rust_analyzer`) will work just fine
-    -- rust_analyzer = {},
+    rust_analyzer = {
+      -- Use the rustup-managed rust-analyzer so it matches the active toolchain
+      -- (`rustup component add rust-analyzer`). Not installed via Mason.
+      cmd = { vim.fn.expand '~/.cargo/bin/rust-analyzer' },
+      settings = {
+        ['rust-analyzer'] = {
+          check = { command = 'clippy' }, -- Run clippy on save for richer diagnostics
+        },
+      },
+    },
 
     stylua = {}, -- Used to format Lua code
 
@@ -804,7 +867,12 @@ do
   --    :Mason
   --
   -- You can press `g?` for help in this menu.
-  local ensure_installed = vim.tbl_keys(servers or {})
+  -- Servers provided by the system rather than Mason
+  local system_servers = {
+    rust_analyzer = true, -- rustup component add rust-analyzer
+    clangd = true, -- dnf install clang-tools-extra
+  }
+  local ensure_installed = vim.tbl_filter(function(name) return not system_servers[name] end, vim.tbl_keys(servers or {}))
   vim.list_extend(ensure_installed, {
     -- You can add other tools here that you want Mason to install
   })
@@ -826,18 +894,12 @@ do
   vim.pack.add { gh 'stevearc/conform.nvim' }
   require('conform').setup {
     notify_on_error = false,
-    format_on_save = function(bufnr)
-      -- You can specify filetypes to autoformat on save here:
-      local enabled_filetypes = {
-        -- lua = true,
-        -- python = true,
-      }
-      if enabled_filetypes[vim.bo[bufnr].filetype] then
-        return { timeout_ms = 500 }
-      else
-        return nil
-      end
-    end,
+    -- Format every buffer on save. Uses a formatter from `formatters_by_ft` if one
+    -- is configured, otherwise falls back to the attached LSP (e.g. rust-analyzer).
+    format_on_save = {
+      timeout_ms = 1000,
+      lsp_format = 'fallback',
+    },
     default_format_opts = {
       lsp_format = 'fallback', -- Use external formatters if configured below, otherwise use LSP formatting. Set to `false` to disable LSP formatting entirely.
     },
@@ -951,7 +1013,7 @@ do
   vim.pack.add { { src = gh 'nvim-treesitter/nvim-treesitter', version = 'main' } }
 
   -- Ensure basic parsers are installed
-  local parsers = { 'bash', 'c', 'diff', 'html', 'lua', 'luadoc', 'markdown', 'markdown_inline', 'query', 'vim', 'vimdoc' }
+  local parsers = { 'bash', 'c', 'cpp', 'cmake', 'doxygen', 'diff', 'html', 'lua', 'luadoc', 'markdown', 'markdown_inline', 'query', 'vim', 'vimdoc' }
   require('nvim-treesitter').install(parsers)
 
   ---@param buf integer
@@ -1004,6 +1066,71 @@ do
 end
 
 -- ============================================================
+-- C/C++ & CMAKE
+-- clangd extras, header/source switching, CMake build integration
+-- ============================================================
+do
+  -- Extra clangd views: :ClangdAST, :ClangdTypeHierarchy, :ClangdSymbolInfo, :ClangdMemoryUsage
+  vim.pack.add { gh 'p00f/clangd_extensions.nvim' }
+  require('clangd_extensions').setup {}
+
+  vim.api.nvim_create_autocmd('LspAttach', {
+    group = vim.api.nvim_create_augroup('custom-clangd-attach', { clear = true }),
+    callback = function(event)
+      local client = vim.lsp.get_client_by_id(event.data.client_id)
+      if not client or client.name ~= 'clangd' then return end
+      vim.keymap.set('n', '<leader>ch', '<cmd>LspClangdSwitchSourceHeader<CR>', { buffer = event.buf, desc = 'Switch source/[H]eader' })
+    end,
+  })
+
+  -- Top-most directory containing a CMakeLists.txt (subdirectories often have their own)
+  local function cmake_root(path)
+    local found = vim.fs.find('CMakeLists.txt', { upward = true, path = path, limit = math.huge })
+    if #found == 0 then return nil end
+    return vim.fs.dirname(found[#found])
+  end
+
+  local function current_cmake_root()
+    local root = cmake_root(vim.fs.dirname(vim.api.nvim_buf_get_name(0))) or cmake_root(vim.fn.getcwd())
+    if not root then vim.notify('No CMakeLists.txt found', vim.log.levels.WARN) end
+    return root
+  end
+
+  -- In CMake projects, `:make` builds into <root>/build and loads errors into the quickfix list
+  vim.api.nvim_create_autocmd('FileType', {
+    group = vim.api.nvim_create_augroup('custom-cmake-makeprg', { clear = true }),
+    pattern = { 'c', 'cpp', 'cmake' },
+    callback = function(args)
+      local root = cmake_root(vim.fs.dirname(vim.api.nvim_buf_get_name(args.buf)))
+      if root then vim.bo[args.buf].makeprg = 'cmake --build ' .. vim.fn.fnameescape(root .. '/build') end
+    end,
+  })
+
+  -- :CMakeConfigure [build type] – configure <root>/build with Ninja and export compile_commands.json for clangd
+  vim.api.nvim_create_user_command('CMakeConfigure', function(opts)
+    local root = current_cmake_root()
+    if not root then return end
+    local build_type = opts.args ~= '' and opts.args or 'Debug'
+    local cmd = { 'cmake', '-S', root, '-B', root .. '/build', '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=' .. build_type, '-DCMAKE_EXPORT_COMPILE_COMMANDS=ON' }
+    vim.notify('Configuring ' .. root .. ' (' .. build_type .. ')...')
+    vim.system(cmd, { text = true }, function(res)
+      vim.schedule(function()
+        if res.code == 0 then
+          vim.notify 'CMake configure finished'
+          -- Restart clangd so it picks up the new compile_commands.json
+          if #vim.lsp.get_clients { name = 'clangd' } > 0 then vim.cmd 'lsp restart clangd' end
+        else
+          vim.notify('CMake configure failed:\n' .. (res.stderr or ''), vim.log.levels.ERROR)
+        end
+      end)
+    end)
+  end, { nargs = '?', complete = function() return { 'Debug', 'Release', 'RelWithDebInfo', 'MinSizeRel' } end, desc = 'Configure CMake project' })
+
+  vim.keymap.set('n', '<leader>cc', '<cmd>CMakeConfigure<CR>', { desc = '[C]Make [C]onfigure' })
+  vim.keymap.set('n', '<leader>cb', '<cmd>make | cwindow<CR>', { desc = '[C]Make [B]uild' })
+end
+
+-- ============================================================
 -- SECTION 10: OPTIONAL EXAMPLES / NEXT STEPS
 -- kickstart.plugins.* examples
 -- ============================================================
@@ -1017,10 +1144,10 @@ do
   --  Here are some example plugins that I've included in the Kickstart repository.
   --  Uncomment any of the lines below to enable them (you will need to restart nvim).
   --
-  -- require 'kickstart.plugins.debug'
-  -- require 'kickstart.plugins.indent_line'
+  require 'kickstart.plugins.debug'
+  require 'kickstart.plugins.indent_line'
   -- require 'kickstart.plugins.lint'
-  -- require 'kickstart.plugins.autopairs'
+  require 'kickstart.plugins.autopairs'
   -- require 'kickstart.plugins.neo-tree'
 
   -- NOTE: You can add your own plugins, configuration, etc. in `lua/custom/plugins/*.lua`.

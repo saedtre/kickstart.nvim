@@ -93,3 +93,39 @@ require('dap-go').setup {
     detached = vim.fn.has 'win32' == 0,
   },
 }
+
+-- C/C++ (and Rust) via GDB's built-in DAP support (gdb >= 14)
+dap.adapters.gdb = {
+  type = 'executable',
+  command = 'gdb',
+  args = { '--interpreter=dap', '--eval-command', 'set print pretty on' },
+}
+
+local function pick_executable()
+  local root = vim.fs.root(0, { 'CMakeLists.txt', 'Cargo.toml', '.git' }) or vim.fn.getcwd()
+  local default = vim.uv.fs_stat(root .. '/build') and root .. '/build/' or root .. '/'
+  return vim.fn.input('Executable: ', default, 'file')
+end
+
+dap.configurations.cpp = {
+  {
+    name = 'Launch (gdb)',
+    type = 'gdb',
+    request = 'launch',
+    program = pick_executable,
+    args = function()
+      local input = vim.fn.input 'Arguments: '
+      return input ~= '' and vim.split(input, ' ', { trimempty = true }) or {}
+    end,
+    cwd = '${workspaceFolder}',
+    stopAtBeginningOfMainSubprogram = false,
+  },
+  {
+    name = 'Attach to process (gdb)',
+    type = 'gdb',
+    request = 'attach',
+    pid = function() return require('dap.utils').pick_process() end,
+  },
+}
+dap.configurations.c = dap.configurations.cpp
+dap.configurations.rust = dap.configurations.cpp

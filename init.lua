@@ -802,7 +802,9 @@ do
     rust_analyzer = {
       -- Use the rustup-managed rust-analyzer so it matches the active toolchain
       -- (`rustup component add rust-analyzer`). Not installed via Mason.
-      cmd = { vim.fn.expand '~/.cargo/bin/rust-analyzer' },
+      -- Resolved from PATH: rustup's proxy lives wherever rustup is installed
+      -- (e.g. /run/current-system/sw/bin under nix-darwin), not necessarily ~/.cargo/bin.
+      cmd = { 'rust-analyzer' },
       settings = {
         ['rust-analyzer'] = {
           check = { command = 'clippy' }, -- Run clippy on save for richer diagnostics

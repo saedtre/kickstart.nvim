@@ -203,7 +203,7 @@ do
     -- Can switch between these as you prefer
     -- Inline diagnostics: show the message at the end of the offending line
     virtual_text = {
-      source = 'if_many', -- Prefix with the LSP name when several are attached
+      source = 'if_many', -- Prefix with the source name when there are several
       spacing = 2,
       prefix = '●',
     },
@@ -320,11 +320,6 @@ do
         return
       end
 
-      if name == 'LuaSnip' then
-        if vim.fn.has 'win32' ~= 1 and vim.fn.executable 'make' == 1 then run_build(name, { 'make', 'install_jsregexp' }, ev.data.path) end
-        return
-      end
-
       if name == 'nvim-treesitter' then
         if not ev.data.active then vim.cmd.packadd 'nvim-treesitter' end
         vim.cmd 'TSUpdate'
@@ -430,7 +425,6 @@ do
       { '<leader>p', group = '[P]roject' },
       { '<leader>c', group = '[C]/C++ & CMake' },
       { '<leader>h', group = 'Git [H]unk', mode = { 'n', 'v' } }, -- Enable gitsigns recommended keymaps first
-      { 'gr', group = 'LSP Actions', mode = { 'n' } },
       -- Neovim's default description for `gx` is very long, which forces the `g` popup into a single
       -- column that overflows shorter windows and hides entries (such as the `gr` group) below the fold.
       { 'gx', desc = 'Open file/URI under cursor', mode = { 'n', 'x' } },
@@ -513,7 +507,7 @@ end
 
 -- ============================================================
 -- SECTION 5: SEARCH & NAVIGATION
--- Telescope setup, keymaps, LSP picker mappings
+-- Telescope setup and keymaps
 -- ============================================================
 do
   -- [[ Fuzzy Finder (files, lsp, etc) ]]
@@ -585,39 +579,9 @@ do
   vim.keymap.set('n', '<leader>sc', builtin.commands, { desc = '[S]earch [C]ommands' })
   vim.keymap.set('n', '<leader><leader>', builtin.buffers, { desc = '[ ] Find existing buffers' })
 
-  -- Add Telescope-based LSP pickers when an LSP attaches to a buffer.
-  -- If you later switch picker plugins, this is where to update these mappings.
-  vim.api.nvim_create_autocmd('LspAttach', {
-    group = vim.api.nvim_create_augroup('telescope-lsp-attach', { clear = true }),
-    callback = function(event)
-      local buf = event.buf
-
-      -- Find references for the word under your cursor.
-      vim.keymap.set('n', 'grr', builtin.lsp_references, { buffer = buf, desc = '[G]oto [R]eferences' })
-
-      -- Jump to the implementation of the word under your cursor.
-      -- Useful when your language has ways of declaring types without an actual implementation.
-      vim.keymap.set('n', 'gri', builtin.lsp_implementations, { buffer = buf, desc = '[G]oto [I]mplementation' })
-
-      -- Jump to the definition of the word under your cursor.
-      -- This is where a variable was first declared, or where a function is defined, etc.
-      -- To jump back, press <C-t>.
-      vim.keymap.set('n', 'grd', builtin.lsp_definitions, { buffer = buf, desc = '[G]oto [D]efinition' })
-
-      -- Fuzzy find all the symbols in your current document.
-      -- Symbols are things like variables, functions, types, etc.
-      vim.keymap.set('n', 'gO', builtin.lsp_document_symbols, { buffer = buf, desc = 'Open Document Symbols' })
-
-      -- Fuzzy find all the symbols in your current workspace.
-      -- Similar to document symbols, except searches over your entire project.
-      vim.keymap.set('n', 'gW', builtin.lsp_dynamic_workspace_symbols, { buffer = buf, desc = 'Open Workspace Symbols' })
-
-      -- Jump to the type of the word under your cursor.
-      -- Useful when you're not sure what type a variable is and you want to see
-      -- the definition of its *type*, not where it was *defined*.
-      vim.keymap.set('n', 'grt', builtin.lsp_type_definitions, { buffer = buf, desc = '[G]oto [T]ype Definition' })
-    end,
-  })
+  -- Fuzzy find functions, types, variables etc. in the current buffer, using treesitter
+  -- (the LSP-free stand-in for "document symbols")
+  vim.keymap.set('n', '<leader>st', builtin.treesitter, { desc = '[S]earch [T]reesitter symbols' })
 
   -- Override default behavior and theme when searching
   vim.keymap.set('n', '<leader>/', function()
@@ -647,362 +611,78 @@ do
 end
 
 -- ============================================================
--- SECTION 6: LSP
--- LSP keymaps, server configuration, Mason tools installations
+-- SECTION 6: EXTERNAL TOOLS
+-- Mason installs the command-line formatters used below. No language servers.
 -- ============================================================
 do
-  -- [[ LSP Configuration ]]
-  -- Brief aside: **What is LSP?**
+  -- NOTE: This config deliberately runs without language servers: no completion
+  -- popups, hover, go-to-definition or LSP diagnostics. Editing relies on
+  -- treesitter, grep/Telescope and plain Vim motions; formatters keep code tidy.
   --
-  -- LSP is an initialism you've probably heard, but might not understand what it is.
-  --
-  -- LSP stands for Language Server Protocol. It's a protocol that helps editors
-  -- and language tooling communicate in a standardized fashion.
-  --
-  -- In general, you have a "server" which is some tool built to understand a particular
-  -- language (such as `gopls`, `lua_ls`, `rust_analyzer`, etc.). These Language Servers
-  -- (sometimes called LSP servers, but that's kind of like ATM Machine) are standalone
-  -- processes that communicate with some "client" - in this case, Neovim!
-  --
-  -- LSP provides Neovim with features like:
-  --  - Go to definition
-  --  - Find references
-  --  - Autocompletion
-  --  - Symbol Search
-  --  - and more!
-  --
-  -- Thus, Language Servers are external tools that must be installed separately from
-  -- Neovim. This is where `mason` and related plugins come into play.
-  --
-  -- If you're wondering about lsp vs treesitter, you can check out the wonderfully
-  -- and elegantly composed help section, `:help lsp-vs-treesitter`
-
-  -- Useful status updates for LSP.
-  vim.pack.add { gh 'j-hui/fidget.nvim' }
-  require('fidget').setup {}
-
-  --  This function gets run when an LSP attaches to a particular buffer.
-  --    That is to say, every time a new file is opened that is associated with
-  --    an lsp (for example, opening `main.rs` is associated with `rust_analyzer`) this
-  --    function will be executed to configure the current buffer
-  vim.api.nvim_create_autocmd('LspAttach', {
-    group = vim.api.nvim_create_augroup('kickstart-lsp-attach', { clear = true }),
-    callback = function(event)
-      -- NOTE: Remember that Lua is a real programming language, and as such it is possible
-      -- to define small helper and utility functions so you don't have to repeat yourself.
-      --
-      -- In this case, we create a function that lets us more easily define mappings specific
-      -- for LSP related items. It sets the mode, buffer and description for us each time.
-      local map = function(keys, func, desc, mode)
-        mode = mode or 'n'
-        vim.keymap.set(mode, keys, func, { buffer = event.buf, desc = 'LSP: ' .. desc })
-      end
-
-      -- Rename the variable under your cursor.
-      --  Most Language Servers support renaming across files, etc.
-      map('grn', vim.lsp.buf.rename, '[R]e[n]ame')
-
-      -- Execute a code action, usually your cursor needs to be on top of an error
-      -- or a suggestion from your LSP for this to activate.
-      map('gra', vim.lsp.buf.code_action, '[G]oto Code [A]ction', { 'n', 'x' })
-
-      -- WARN: This is not Goto Definition, this is Goto Declaration.
-      --  For example, in C this would take you to the header.
-      map('grD', vim.lsp.buf.declaration, '[G]oto [D]eclaration')
-
-      -- The following two autocommands are used to highlight references of the
-      -- word under your cursor when your cursor rests there for a little while.
-      --    See `:help CursorHold` for information about when this is executed
-      --
-      -- When you move your cursor, the highlights will be cleared (the second autocommand).
-      local client = vim.lsp.get_client_by_id(event.data.client_id)
-      if client and client:supports_method('textDocument/documentHighlight', event.buf) then
-        local highlight_augroup = vim.api.nvim_create_augroup('kickstart-lsp-highlight', { clear = false })
-        vim.api.nvim_create_autocmd({ 'CursorHold', 'CursorHoldI' }, {
-          buffer = event.buf,
-          group = highlight_augroup,
-          callback = vim.lsp.buf.document_highlight,
-        })
-
-        vim.api.nvim_create_autocmd({ 'CursorMoved', 'CursorMovedI' }, {
-          buffer = event.buf,
-          group = highlight_augroup,
-          callback = vim.lsp.buf.clear_references,
-        })
-
-        vim.api.nvim_create_autocmd('LspDetach', {
-          group = vim.api.nvim_create_augroup('kickstart-lsp-detach', { clear = true }),
-          callback = function(event2)
-            vim.lsp.buf.clear_references()
-            vim.api.nvim_clear_autocmds { group = 'kickstart-lsp-highlight', buffer = event2.buf }
-          end,
-        })
-      end
-
-      -- The following code creates a keymap to toggle inlay hints in your
-      -- code, if the language server you are using supports them
-      --
-      -- This may be unwanted, since they displace some of your code
-      if client and client:supports_method('textDocument/inlayHint', event.buf) then
-        -- Show inlay hints (types, parameter names, etc.) by default
-        vim.lsp.inlay_hint.enable(true, { bufnr = event.buf })
-        map('<leader>th', function() vim.lsp.inlay_hint.enable(not vim.lsp.inlay_hint.is_enabled { bufnr = event.buf }) end, '[T]oggle Inlay [H]ints')
-      end
-    end,
-  })
-
-  -- Enable the following language servers
-  --  Feel free to add/remove any LSPs that you want here. They will automatically be installed.
-  --  See `:help lsp-config` for information about keys and how to configure
-  ---@type table<string, vim.lsp.Config>
-  local servers = {
-    -- C/C++. Reads build flags from compile_commands.json (CMake: -DCMAKE_EXPORT_COMPILE_COMMANDS=ON,
-    -- which :CMakeConfigure sets; Make: `bear -- make`). Formats with .clang-format, or LLVM style if absent.
-    clangd = {
-      -- Prefer the repo root (.git) over the *nearest* compile_commands.json. lspconfig's default order
-      -- picks whichever compile_commands.json is closest to the file, so a stray one in a subdirectory
-      -- (e.g. chapter04/) gives that subdirectory its own clangd server, separate from the one used for
-      -- shared headers in ../include: split index, broken cross-directory references.
-      root_markers = { '.clangd', '.git', 'compile_commands.json', 'compile_flags.txt', 'configure.ac' },
-      -- clangd looks up compile_commands.json itself (nearest parent of each file), regardless of the
-      -- LSP root. When the root has one, point clangd at it so nested databases can't shadow it.
-      cmd = function(dispatchers, config)
-        local cmd = {
-          'clangd',
-          '--background-index', -- Index the whole project, not just open files
-          '--clang-tidy', -- clang-tidy warnings as inline diagnostics (configure via .clang-tidy)
-          '--header-insertion=iwyu', -- Completion inserts the #include you need
-          '--completion-style=detailed',
-          '--function-arg-placeholders',
-          '--query-driver=/usr/bin/gcc,/usr/bin/g++', -- Let clangd find GCC's standard library headers
-        }
-        local root = config.root_dir
-        if root and vim.uv.fs_stat(root .. '/compile_commands.json') then
-          table.insert(cmd, '--compile-commands-dir=' .. root)
-        end
-        return vim.lsp.rpc.start(cmd, dispatchers, { cwd = config.cmd_cwd, env = config.cmd_env, detached = config.detached })
-      end,
-      -- NOTE: Don't set `init_options.fallbackFlags` here: they apply to C and C++ files alike, so a
-      -- `-std=c++20` breaks every C file without a compile_commands.json entry. Without them clangd picks
-      -- the language standard from the file extension. Set the standard per project instead
-      -- (CMAKE_C_STANDARD / CMAKE_CXX_STANDARD, or a .clangd file).
-    },
-
-    -- CMake: completion, hover, go-to-definition, diagnostics and formatting
-    neocmake = {},
-
-    -- gopls = {},
-    -- pyright = {},
-    -- tsc = {},
-    --
-    -- Some languages (like rust) have entire language plugins that can be useful:
-    --    https://github.com/mrcjkb/rustaceanvim
-    --
-    -- But for many setups, the LSP (`rust_analyzer`) will work just fine
-    rust_analyzer = {
-      -- Use the rustup-managed rust-analyzer so it matches the active toolchain
-      -- (`rustup component add rust-analyzer`). Not installed via Mason.
-      -- Resolved from PATH: rustup's proxy lives wherever rustup is installed
-      -- (e.g. /run/current-system/sw/bin under nix-darwin), not necessarily ~/.cargo/bin.
-      cmd = { 'rust-analyzer' },
-      settings = {
-        ['rust-analyzer'] = {
-          check = { command = 'clippy' }, -- Run clippy on save for richer diagnostics
-        },
-      },
-    },
-
-    stylua = {}, -- Used to format Lua code
-
-    -- Special Lua Config, as recommended by neovim help docs
-    lua_ls = {
-      on_init = function(client)
-        client.server_capabilities.documentFormattingProvider = false -- Disable formatting (formatting is done by stylua)
-
-        if client.workspace_folders then
-          local path = client.workspace_folders[1].name
-          if path ~= vim.fn.stdpath 'config' and (vim.uv.fs_stat(path .. '/.luarc.json') or vim.uv.fs_stat(path .. '/.luarc.jsonc')) then return end
-        end
-
-        local current_settings = client.config.settings --[[@as lspconfig.settings.lua_ls]]
-        client.config.settings.Lua = vim.tbl_deep_extend('force', current_settings.Lua, {
-          runtime = {
-            version = 'LuaJIT',
-            path = { 'lua/?.lua', 'lua/?/init.lua' },
-          },
-          workspace = {
-            checkThirdParty = false,
-            -- NOTE: this is a lot slower and will cause issues when working on your own configuration.
-            --  See https://github.com/neovim/nvim-lspconfig/issues/3189
-            library = vim.api.nvim_get_runtime_file('', true),
-          },
-        })
-      end,
-      ---@type lspconfig.settings.lua_ls
-      settings = {
-        Lua = {
-          format = { enable = false }, -- Disable formatting (formatting is done by stylua)
-        },
-      },
-    },
-  }
+  -- The full LSP setup (clangd, gopls, rust-analyzer, lua_ls, blink.cmp...) was saved
+  -- with `git stash` before it was removed. `git stash list` shows it.
 
   vim.pack.add {
-    gh 'neovim/nvim-lspconfig',
     gh 'mason-org/mason.nvim',
-    gh 'mason-org/mason-lspconfig.nvim',
     gh 'WhoIsSethDaniel/mason-tool-installer.nvim',
   }
 
-  -- Automatically install LSPs and related tools to stdpath for Neovim
-  require('mason').setup {}
+  -- PATH = 'append': system binaries (rustup's rustfmt, nix's Go tools) take precedence
+  -- over Mason's copies.
+  require('mason').setup { PATH = 'append' }
 
-  -- Translates between nvim-lspconfig server names and mason.nvim package names (e.g. lua_ls <-> lua-language-server)
-  require('mason-lspconfig').setup {
-    automatic_enable = false, -- Change this to true if you want to automatically enable servers that are installed manually (e.g. via :Mason / :MasonInstall)
+  -- Formatters that Mason installs. rustfmt comes from rustup instead.
+  --   :Mason shows what is installed (press `g?` for help)
+  require('mason-tool-installer').setup {
+    ensure_installed = {
+      'stylua', -- Lua
+      'goimports', -- Go: adds missing and removes unused imports
+      'gofumpt', -- Go: stricter gofmt
+      'clang-format', -- C/C++: also sorts #includes
+    },
   }
-
-  -- Ensure the servers and tools above are installed
-  --
-  -- To check the current status of installed tools and/or manually install
-  -- other tools, you can run
-  --    :Mason
-  --
-  -- You can press `g?` for help in this menu.
-  -- Servers provided by the system rather than Mason
-  local system_servers = {
-    rust_analyzer = true, -- rustup component add rust-analyzer
-    clangd = true, -- dnf install clang-tools-extra
-  }
-  local ensure_installed = vim.tbl_filter(function(name) return not system_servers[name] end, vim.tbl_keys(servers or {}))
-  vim.list_extend(ensure_installed, {
-    -- You can add other tools here that you want Mason to install
-  })
-
-  require('mason-tool-installer').setup { ensure_installed = ensure_installed }
-
-  for name, server in pairs(servers) do
-    vim.lsp.config(name, server)
-    vim.lsp.enable(name)
-  end
 end
 
 -- ============================================================
--- SECTION 7: FORMATTING
--- conform.nvim setup and keymap
+-- SECTION 7: FORMATTING & IMPORTS
+-- conform.nvim: format (and fix imports) on save
 -- ============================================================
 do
   -- [[ Formatting ]]
   vim.pack.add { gh 'stevearc/conform.nvim' }
   require('conform').setup {
-    notify_on_error = false,
-    -- Format every buffer on save. Uses a formatter from `formatters_by_ft` if one
-    -- is configured, otherwise falls back to the attached LSP (e.g. rust-analyzer).
-    format_on_save = {
-      timeout_ms = 1000,
-      lsp_format = 'fallback',
-    },
+    notify_on_error = true,
+    -- Format on save with the formatters below. Filetypes without one are left alone.
+    -- <leader>tf toggles it for the session.
+    format_on_save = function()
+      if vim.g.disable_autoformat then return end
+      return { timeout_ms = 1000 }
+    end,
     default_format_opts = {
-      lsp_format = 'fallback', -- Use external formatters if configured below, otherwise use LSP formatting. Set to `false` to disable LSP formatting entirely.
+      lsp_format = 'never', -- No language servers in this config
     },
-    -- You can also specify external formatters in here.
+    -- Formatters run in order; import handling happens as part of formatting.
     formatters_by_ft = {
-      -- rust = { 'rustfmt' },
-      -- Conform can also run multiple formatters sequentially
-      -- python = { "isort", "black" },
-      --
-      -- You can use 'stop_after_first' to run the first available formatter from the list
-      -- javascript = { "prettierd", "prettier", stop_after_first = true },
+      lua = { 'stylua' },
+      -- goimports adds missing imports and removes unused ones, then gofumpt formats
+      go = { 'goimports', 'gofumpt' },
+      -- rustfmt groups and sorts `use` statements, but can't add or remove them
+      rust = { 'rustfmt' },
+      -- clang-format sorts #include blocks (configure via .clang-format)
+      c = { 'clang-format' },
+      cpp = { 'clang-format' },
     },
   }
 
   vim.keymap.set({ 'n', 'v' }, '<leader>f', function() require('conform').format { async = true } end, { desc = '[F]ormat buffer' })
+  vim.keymap.set('n', '<leader>tf', function()
+    vim.g.disable_autoformat = not vim.g.disable_autoformat
+    vim.notify('Format on save ' .. (vim.g.disable_autoformat and 'disabled' or 'enabled'))
+  end, { desc = '[T]oggle [F]ormat on save' })
 end
 
 -- ============================================================
--- SECTION 8: AUTOCOMPLETE & SNIPPETS
--- blink.cmp and luasnip setup
--- ============================================================
-do
-  -- [[ Snippet Engine ]]
-
-  -- NOTE: You can also specify plugin using a version range for its git tag.
-  --  See `:help vim.version.range()` for more info
-  vim.pack.add { { src = gh 'L3MON4D3/LuaSnip', version = vim.version.range '2.*' } }
-  require('luasnip').setup {}
-
-  -- `friendly-snippets` contains a variety of premade snippets.
-  --    See the README about individual language/framework/plugin snippets:
-  --    https://github.com/rafamadriz/friendly-snippets
-  --
-  -- vim.pack.add { gh 'rafamadriz/friendly-snippets' }
-  -- require('luasnip.loaders.from_vscode').lazy_load()
-
-  -- [[ Autocomplete Engine ]]
-  vim.pack.add { { src = gh 'saghen/blink.cmp', version = vim.version.range '1.*' } }
-  require('blink.cmp').setup {
-    keymap = {
-      -- 'default' (recommended) for mappings similar to built-in completions
-      --   <c-y> to accept ([y]es) the completion.
-      --    This will auto-import if your LSP supports it.
-      --    This will expand snippets if the LSP sent a snippet.
-      -- 'super-tab' for tab to accept
-      -- 'enter' for enter to accept
-      -- 'none' for no mappings
-      --
-      -- For an understanding of why the 'default' preset is recommended,
-      -- you will need to read `:help ins-completion`
-      --
-      -- No, but seriously. Please read `:help ins-completion`, it is really good!
-      --
-      -- All presets have the following mappings:
-      -- <tab>/<s-tab>: move to right/left of your snippet expansion
-      -- <c-space>: Open menu or open docs if already open
-      -- <c-n>/<c-p> or <up>/<down>: Select next/previous item
-      -- <c-e>: Hide menu
-      -- <c-k>: Toggle signature help
-      --
-      -- See `:help blink-cmp-config-keymap` for defining your own keymap
-      preset = 'default',
-
-      -- For more advanced Luasnip keymaps (e.g. selecting choice nodes, expansion) see:
-      --    https://github.com/L3MON4D3/LuaSnip?tab=readme-ov-file#keymaps
-    },
-
-    appearance = {
-      -- 'mono' (default) for 'Nerd Font Mono' or 'normal' for 'Nerd Font'
-      -- Adjusts spacing to ensure icons are aligned
-      nerd_font_variant = 'mono',
-    },
-
-    completion = {
-      -- By default, you may press `<c-space>` to show the documentation.
-      -- Optionally, set `auto_show = true` to show the documentation after a delay.
-      documentation = { auto_show = false, auto_show_delay_ms = 500 },
-    },
-
-    sources = {
-      default = { 'lsp', 'path', 'snippets' },
-    },
-
-    snippets = { preset = 'luasnip' },
-
-    -- Blink.cmp includes an optional, recommended rust fuzzy matcher,
-    -- which automatically downloads a prebuilt binary when enabled.
-    --
-    -- By default, we use the Lua implementation instead, but you may enable
-    -- the rust implementation via `'prefer_rust_with_warning'`
-    --
-    -- See `:help blink-cmp-config-fuzzy` for more information
-    fuzzy = { implementation = 'lua' },
-
-    -- Shows a signature help window while you type arguments for a function
-    signature = { enabled = true },
-  }
-end
-
--- ============================================================
--- SECTION 9: TREESITTER
+-- SECTION 8: TREESITTER
 -- Parser installation, syntax highlighting, folds, indentation
 -- ============================================================
 do
@@ -1015,7 +695,26 @@ do
   vim.pack.add { { src = gh 'nvim-treesitter/nvim-treesitter', version = 'main' } }
 
   -- Ensure basic parsers are installed
-  local parsers = { 'bash', 'c', 'cpp', 'cmake', 'doxygen', 'diff', 'html', 'lua', 'luadoc', 'markdown', 'markdown_inline', 'query', 'vim', 'vimdoc' }
+  local parsers = {
+    'bash',
+    'c',
+    'cpp',
+    'cmake',
+    'doxygen',
+    'diff',
+    'go',
+    'gomod',
+    'gosum',
+    'gowork',
+    'html',
+    'lua',
+    'luadoc',
+    'markdown',
+    'markdown_inline',
+    'query',
+    'vim',
+    'vimdoc',
+  }
   require('nvim-treesitter').install(parsers)
 
   ---@param buf integer
@@ -1068,20 +767,433 @@ do
 end
 
 -- ============================================================
--- C/C++ & CMAKE
--- clangd extras, header/source switching, CMake build integration
+-- SECTION 9: GO TO DEFINITION (CTAGS)
+-- Project tags via universal-ctags, gd / gD with fallbacks
 -- ============================================================
 do
-  -- Extra clangd views: :ClangdAST, :ClangdTypeHierarchy, :ClangdSymbolInfo, :ClangdMemoryUsage
-  vim.pack.add { gh 'p00f/clangd_extensions.nvim' }
-  require('clangd_extensions').setup {}
+  -- Universal Ctags indexes every definition in the project into a tags file, which
+  -- Neovim's tag commands read natively. Matches are by name, not by type, so a name
+  -- defined in several places shows a list to pick from.
+  --
+  --   gd          Go to definition (falls back to the built-in local `gd`)
+  --   gD          Go to declaration: C/C++ prototypes and extern declarations,
+  --               otherwise the definition (falls back to the built-in `gD`)
+  --   <C-]>       Plain tag jump, <C-t> jumps back (also after gd / gD)
+  --   <leader>sT  Fuzzy search every tag in the project
+  --   :Ctags      Regenerate the tags for the current project
+  --
+  -- Two kinds of tags file, both in stdpath('cache')/ctags so repositories stay clean:
+  --   * Project: the files in the git repository (respecting .gitignore). Rebuilt on save.
+  --   * Go dependencies: every package the module imports, standard library included
+  --     (from `go list -deps`), so `gd` works on `fmt.Println` or a `go get` library.
+  --     Rebuilt when go.mod or go.sum is saved.
+  --   * C/C++ dependencies: every header the project's sources include, outside the project:
+  --     the C/C++ standard library, the platform SDK, third-party libraries. Found by running
+  --     each compile_commands.json command with `-M`, so it needs a compile_commands.json in
+  --     a directory above the file (or its build/), e.g. from :CMakeConfigure. Rebuilt when
+  --     compile_commands.json changes, after :CMakeConfigure, and by :Ctags (e.g. after
+  --     including a header the project hasn't used before).
+  --
+  -- Files outside a project (such as a standard library header reached with gd) keep the
+  -- tags of the buffer they were opened from, so gd keeps working inside them.
 
-  vim.api.nvim_create_autocmd('LspAttach', {
-    group = vim.api.nvim_create_augroup('custom-clangd-attach', { clear = true }),
-    callback = function(event)
-      local client = vim.lsp.get_client_by_id(event.data.client_id)
-      if not client or client.name ~= 'clangd' then return end
-      vim.keymap.set('n', '<leader>ch', '<cmd>LspClangdSwitchSourceHeader<CR>', { buffer = event.buf, desc = 'Switch source/[H]eader' })
+  local tags_dir = vim.fs.joinpath(vim.fn.stdpath 'cache', 'ctags')
+
+  local function cache_file(root, suffix) return vim.fs.joinpath(tags_dir, (root:gsub('[/\\:]', '%%')) .. suffix) end
+
+  -- Only git repositories are indexed, so opening a file in ~ never tags the whole home directory
+  local function project_root(buf) return vim.fs.root(buf, '.git') end
+  local function go_module_root(buf) return vim.fs.root(buf, 'go.mod') end
+
+  -- compile_commands.json in the file's directory or a parent (or their build/), up to the project root
+  local function compile_commands(buf, root)
+    local dir = vim.fs.dirname(vim.fs.normalize(vim.fn.fnamemodify(vim.api.nvim_buf_get_name(buf), ':p')))
+    while dir do
+      for _, file in ipairs { dir .. '/compile_commands.json', dir .. '/build/compile_commands.json' } do
+        if vim.uv.fs_stat(file) then return file end
+      end
+      local parent = vim.fs.dirname(dir)
+      dir = dir ~= root and parent ~= dir and parent or nil
+    end
+  end
+
+  -- --fields=+s records each Go tag's package, which gd uses to resolve `pkg.Func`
+  -- (and each C++ tag's namespace or class); {specialization} marks C++ template specializations
+  local ctags_opts = { '--tag-relative=never', '--fields=+s', '--fields-C++=+{specialization}', '--kinds-C=+px', '--kinds-C++=+px' }
+  local ctags_args = 'ctags -L - ' .. table.concat(ctags_opts, ' ') .. ' -f "$2" 2>/dev/null'
+
+  -- For system headers: libc++ headers have no extension (<vector>), and a few macros that
+  -- wrap declarations confuse ctags' parser (libc++, macOS SDK, glibc, libstdc++)
+  local c_dep_ctags_opts = {
+    '--langmap=C++:+.',
+    '-D_LIBCPP_BEGIN_NAMESPACE_STD=namespace std {',
+    '-D_LIBCPP_END_NAMESPACE_STD=}',
+    '-I_LIBC_SINGLE_BY_DEFAULT+,__BEGIN_DECLS,__END_DECLS,__printflike+,__scanflike+,__THROW,__wur,__nonnull+',
+    '-I_GLIBCXX_BEGIN_NAMESPACE_VERSION,_GLIBCXX_END_NAMESPACE_VERSION,_GLIBCXX_VISIBILITY+',
+  }
+
+  -- Absolute paths of the project's files, since the tags file lives outside the project
+  local project_files = [[git ls-files -co --exclude-standard | sed "s|^|$1/|"]]
+
+  -- Absolute paths of the Go files (for this platform, no tests) of every package the module
+  -- depends on, standard library included, excluding the module's own packages
+  local go_dep_files = [[go list -e -deps -f '{{$d := .Dir}}{{$dep := .Standard}}{{with .Module}}{{if not .Main}}{{$dep = true}}{{end}}{{end}}{{if $dep}}{{range .GoFiles}}{{$d}}/{{.}}{{"\n"}}{{end}}{{range .CgoFiles}}{{$d}}/{{.}}{{"\n"}}{{end}}{{end}}' ./... 2>/dev/null]]
+
+  -- Splits a compile_commands.json "command" string into arguments, the way sh would
+  local function shell_split(cmd)
+    local args, cur, quote, i = {}, nil, nil, 1
+    while i <= #cmd do
+      local c = cmd:sub(i, i)
+      if quote == "'" then
+        if c == "'" then
+          quote = nil
+        else
+          cur = cur .. c
+        end
+      elseif quote == '"' then
+        if c == '"' then
+          quote = nil
+        elseif c == '\\' and cmd:sub(i + 1, i + 1):match '["\\$`]' then
+          i = i + 1
+          cur = cur .. cmd:sub(i, i)
+        else
+          cur = cur .. c
+        end
+      elseif c:match '%s' then
+        if cur then table.insert(args, cur) end
+        cur = nil
+      else
+        cur = cur or ''
+        if c == "'" or c == '"' then
+          quote = c
+        elseif c == '\\' then
+          i = i + 1
+          cur = cur .. cmd:sub(i, i)
+        else
+          cur = cur .. c
+        end
+      end
+      i = i + 1
+    end
+    if cur then table.insert(args, cur) end
+    return args
+  end
+
+  -- A compile command turned into one that prints the headers it includes (-M), instead of
+  -- compiling. -MG lists missing (e.g. not yet generated) headers rather than failing.
+  local function deps_command(args)
+    local out, i = {}, 1
+    while i <= #args do
+      local a = args[i]
+      if a == '-o' or a == '-MF' or a == '-MT' or a == '-MQ' then
+        i = i + 1
+      elseif not (a == '-c' or a:match '^%-M[MDPG]*$' or a:match '^%-M[FTQ].' or a:match '^%-o.') then
+        table.insert(out, a)
+      end
+      i = i + 1
+    end
+    vim.list_extend(out, { '-M', '-MG' })
+    return out
+  end
+
+  -- Adds each path in Make dependency output (`out.o: a.c b.h \`) to `deps`
+  local function parse_deps(out, dir, deps)
+    out = out:gsub('\\\n', ' '):gsub('\\ ', '\0')
+    for word in out:gmatch '%S+' do
+      if not word:match ':$' then
+        local path = word:gsub('%z', ' ')
+        if not path:match '^/' then path = vim.fs.joinpath(dir, path) end
+        deps[vim.fs.normalize(path)] = true
+      end
+    end
+  end
+
+  -- Calls `done` with the absolute paths of the headers that compile_commands.json's sources
+  -- include, outside the project's own files (already in the project tags), or nil on error
+  local function c_dep_files(cc_json, root, done)
+    local fd = io.open(cc_json)
+    if not fd then return done(nil) end
+    local ok, entries = pcall(vim.json.decode, fd:read '*a')
+    fd:close()
+    if not ok or type(entries) ~= 'table' then return done(nil) end
+
+    vim.system({ 'git', 'ls-files', '-co', '--exclude-standard', '-z' }, { cwd = root }, function(git)
+      local project = {}
+      for f in (git.stdout or ''):gmatch '[^%z]+' do
+        project[vim.fs.joinpath(root, f)] = true
+      end
+
+      local deps, next_entry, active = {}, 1, 0
+      local function finish()
+        local files = {}
+        for path in pairs(deps) do
+          if not project[path] and not path:find('/__cxx03/', 1, true) and vim.uv.fs_stat(path) then table.insert(files, path) end
+        end
+        table.sort(files)
+        done(files)
+      end
+
+      -- Runs the commands in parallel, one per CPU
+      local jobs = vim.uv.available_parallelism()
+      local function run_next()
+        while active < jobs and next_entry <= #entries do
+          local entry = entries[next_entry]
+          next_entry = next_entry + 1
+          local args = entry.arguments or shell_split(entry.command or '')
+          local dir = entry.directory or root
+          active = active + 1
+          local started = #args > 0
+            and pcall(vim.system, deps_command(args), { cwd = dir, text = true }, function(res)
+              parse_deps(res.stdout or '', dir, deps)
+              active = active - 1
+              run_next()
+            end)
+          if not started then active = active - 1 end
+        end
+        if active == 0 and next_entry > #entries then finish() end
+      end
+      run_next()
+    end)
+  end
+
+  local running, pending = {}, {}
+
+  -- Writes the tags file `file` with `produce(tmp, done)`, which writes `tmp` and calls
+  -- `done(ok)`; it's then renamed into place, so a lookup never reads a half-written file.
+  -- Overlapping requests rerun once at the end.
+  local function generate(file, produce)
+    if vim.fn.executable 'ctags' ~= 1 then return end
+    if running[file] then
+      pending[file] = true
+      return
+    end
+    running[file] = true
+    vim.fn.mkdir(tags_dir, 'p')
+    local tmp = file .. '.tmp'
+    produce(tmp, function(ok)
+      if ok then vim.uv.fs_rename(tmp, file) end
+      running[file] = nil
+      if pending[file] then
+        pending[file] = nil
+        vim.schedule(function() generate(file, produce) end)
+      end
+    end)
+  end
+
+  -- Tags the files that the shell command `list_files` prints, run in `root` (also its $1)
+  local function from_file_list(root, list_files)
+    return function(tmp, done)
+      vim.system({ 'sh', '-c', list_files .. ' | ' .. ctags_args, 'sh', root, tmp }, { cwd = root }, function(res) done(res.code == 0) end)
+    end
+  end
+
+  local function generate_project(root) generate(cache_file(root, '.tags'), from_file_list(root, project_files)) end
+
+  local function generate_go_deps(mod_root)
+    if vim.fn.executable 'go' == 1 then generate(cache_file(mod_root, '.godeps.tags'), from_file_list(mod_root, go_dep_files)) end
+  end
+
+  local function c_deps_tags(cc_json) return cache_file(vim.fs.dirname(cc_json), '.cdeps.tags') end
+
+  local function generate_c_deps(cc_json, root)
+    generate(c_deps_tags(cc_json), function(tmp, done)
+      c_dep_files(cc_json, root, function(files)
+        if not files then return done(false) end
+        local list = tmp .. '.files'
+        local fd = io.open(list, 'w')
+        if not fd then return done(false) end
+        fd:write(table.concat(files, '\n'), '\n')
+        fd:close()
+        local cmd = vim.list_extend({ 'ctags', '-L', list, '-f', tmp }, ctags_opts)
+        vim.system(vim.list_extend(cmd, c_dep_ctags_opts), {}, function(res)
+          os.remove(list)
+          done(res.code == 0)
+        end)
+      end)
+    end)
+  end
+
+  local c_extensions = { c = true, cc = true, cpp = true, cxx = true, ['c++'] = true, h = true, hh = true, hpp = true, hxx = true, ipp = true, inl = true }
+
+  local group = vim.api.nvim_create_augroup('custom-ctags', { clear = true })
+
+  -- Point each buffer at its tags files (project first), generating them on first use
+  vim.api.nvim_create_autocmd({ 'BufReadPost', 'BufNewFile' }, {
+    group = group,
+    callback = function(args)
+      if vim.bo[args.buf].buftype ~= '' then return end
+      local root = project_root(args.buf)
+      if not root then
+        -- Outside a project (e.g. a library file reached with gd): keep the previous buffer's tags
+        local prev = vim.fn.bufnr '#'
+        if prev > 0 and prev ~= args.buf and vim.api.nvim_buf_is_loaded(prev) then vim.bo[args.buf].tags = vim.bo[prev].tags end
+        return
+      end
+      local files = { cache_file(root, '.tags') }
+      if not vim.uv.fs_stat(files[1]) then generate_project(root) end
+
+      -- By extension: filetype detection hasn't run yet when this autocmd fires
+      local ext = vim.api.nvim_buf_get_name(args.buf):match '%.([^./]+)$'
+      local mod_root = ext == 'go' and go_module_root(args.buf)
+      if mod_root then
+        local file = cache_file(mod_root, '.godeps.tags')
+        table.insert(files, file)
+        if not vim.uv.fs_stat(file) then generate_go_deps(mod_root) end
+      end
+
+      local cc_json = c_extensions[ext] and compile_commands(args.buf, root)
+      if cc_json then
+        local file = c_deps_tags(cc_json)
+        table.insert(files, file)
+        -- Regenerate when missing, or older than compile_commands.json
+        local tags_stat, cc_stat = vim.uv.fs_stat(file), vim.uv.fs_stat(cc_json)
+        if not tags_stat or (cc_stat and cc_stat.mtime.sec > tags_stat.mtime.sec) then generate_c_deps(cc_json, root) end
+      end
+
+      -- Escape spaces and commas: they separate entries in 'tags'
+      vim.bo[args.buf].tags = table.concat(vim.tbl_map(function(f) return vim.fn.escape(f, ' ,\\') end, files), ',')
+    end,
+  })
+
+  -- Keep tags current: the project on every save, Go dependencies when they change
+  vim.api.nvim_create_autocmd('BufWritePost', {
+    group = group,
+    callback = function(args)
+      local root = project_root(args.buf)
+      if not root then return end
+      generate_project(root)
+      local name = vim.fs.basename(args.file)
+      if name == 'go.mod' or name == 'go.sum' then generate_go_deps(vim.fs.dirname(vim.fs.normalize(vim.fn.fnamemodify(args.file, ':p')))) end
+    end,
+  })
+
+  vim.api.nvim_create_user_command('Ctags', function()
+    local root = project_root(0)
+    if not root then return vim.notify('Not in a git repository', vim.log.levels.WARN) end
+    generate_project(root)
+    local mod_root = go_module_root(0)
+    if mod_root then generate_go_deps(mod_root) end
+    local cc_json = compile_commands(0, root)
+    if cc_json then generate_c_deps(cc_json, root) end
+  end, { desc = 'Regenerate ctags for the current project (and its Go or C/C++ dependencies)' })
+
+  -- :CMakeConfigure rewrote compile_commands.json
+  vim.api.nvim_create_autocmd('User', {
+    group = group,
+    pattern = 'CMakeConfigured',
+    callback = function(args)
+      local cc_json = args.data.build .. '/compile_commands.json'
+      local root = vim.fs.root(args.data.build, '.git')
+      if root and vim.uv.fs_stat(cc_json) then generate_c_deps(cc_json, root) end
+    end,
+  })
+
+  -- C/C++ tag kinds that declare rather than define: function prototypes, extern variables
+  local declaration_kinds = { p = true, x = true }
+
+  -- Set while gd / gD run, so 'tagfunc' only filters their matches; every other tag
+  -- command keeps Neovim's default lookup.
+  local lookup -- { kind = 'definition' | 'declaration', qualifier = 'pkg' in `pkg.Name`, or nil }
+
+  -- Narrows `tags` to those matching `keep`, unless that would leave none
+  local function prefer(tags, keep)
+    local kept = vim.tbl_filter(keep, tags)
+    return #kept > 0 and kept or tags
+  end
+
+  ---@diagnostic disable-next-line: duplicate-set-field
+  function _G.CustomTagfunc(pattern, _, info)
+    if not lookup then return vim.NIL end
+    -- taglist() inside 'tagfunc' uses the normal lookup (tagfunc isn't called recursively)
+    local tags = vim.fn.taglist('^' .. vim.fn.escape(pattern, [[\.*[]~^$/]]) .. '$', info.buf_ffname)
+    local ft = vim.bo.filetype
+
+    -- C/C++: definitions for gd, prototypes/extern declarations for gD. Elsewhere (and for
+    -- static C functions) the definition is the declaration.
+    if ft == 'c' or ft == 'cpp' then
+      local want_declaration = lookup.kind == 'declaration'
+      tags = prefer(tags, function(tag) return (declaration_kinds[tag.kind] == true) == want_declaration end)
+
+      -- C++: `ns::Name` / `Class::Name` means Name in that namespace or class
+      local function in_scope(scope, name) return scope ~= nil and (scope == name or vim.endswith(scope, '::' .. name)) end
+      if lookup.qualifier then
+        tags = prefer(tags, function(tag) return in_scope(tag.namespace or tag.class or tag.struct or tag.union or tag.enum, lookup.qualifier) end)
+      end
+      -- A class's constructors share its name: prefer the class itself
+      tags = prefer(tags, function(tag) return not in_scope(tag.class or tag.struct, pattern) end)
+      -- ...and the primary template over specializations such as vector<bool>
+      tags = prefer(tags, function(tag) return tag.specialization == nil end)
+    end
+
+    -- Go: `pkg.Name` means Name in package pkg. A bare `Name` is in the current package,
+    -- which is the current file's directory.
+    if ft == 'go' then
+      if lookup.qualifier then
+        tags = prefer(tags, function(tag) return tag.package == lookup.qualifier end)
+      else
+        local dir = vim.fs.dirname(info.buf_ffname)
+        tags = prefer(tags, function(tag) return vim.fs.dirname(vim.fs.normalize(tag.filename)) == dir end)
+      end
+    end
+
+    return tags
+  end
+  vim.o.tagfunc = 'v:lua.CustomTagfunc'
+
+  -- The identifier before a `.` or `::` directly preceding the word under the cursor: `fmt` in
+  -- fmt.Println, `std` in std::vector
+  local function qualifier_under_cursor()
+    local line, col = vim.api.nvim_get_current_line(), vim.fn.col '.'
+    local start = col
+    while start > 1 and line:sub(start - 1, start - 1):match '[%w_]' do
+      start = start - 1
+    end
+    local before = line:sub(1, start - 1)
+    return before:match '([%a_][%w_]*)%.$' or before:match '([%a_][%w_]*)::$'
+  end
+
+  local function goto_tag(kind, fallback)
+    return function()
+      local word = vim.fn.expand '<cword>'
+      if word == '' then return end
+      lookup = { kind = kind, qualifier = qualifier_under_cursor() }
+      local ok = pcall(vim.cmd.tjump, word) -- jumps directly with one match, lists several
+      lookup = nil
+      if not ok then vim.cmd.normal { fallback, bang = true } end
+    end
+  end
+
+  vim.keymap.set('n', 'gd', goto_tag('definition', 'gd'), { desc = '[G]oto [D]efinition (ctags)' })
+  vim.keymap.set('n', 'gD', goto_tag('declaration', 'gD'), { desc = '[G]oto [D]eclaration (ctags)' })
+  vim.keymap.set('n', '<leader>sT', function() require('telescope.builtin').tags() end, { desc = '[S]earch project [T]ags' })
+end
+
+-- ============================================================
+-- C/C++ & CMAKE
+-- header/source switching, CMake build integration
+-- ============================================================
+do
+  -- Switch between foo.c/foo.cpp and foo.h/foo.hpp: looks next to the file first,
+  -- then anywhere under the working directory (e.g. src/ <-> include/).
+  local source_exts = { 'c', 'cc', 'cpp', 'cxx' }
+  local header_exts = { 'h', 'hh', 'hpp', 'hxx' }
+  vim.api.nvim_create_autocmd('FileType', {
+    group = vim.api.nvim_create_augroup('custom-switch-header', { clear = true }),
+    pattern = { 'c', 'cpp' },
+    callback = function(args)
+      vim.keymap.set('n', '<leader>ch', function()
+        local path = vim.api.nvim_buf_get_name(0)
+        local stem, ext = vim.fn.fnamemodify(path, ':t:r'), vim.fn.fnamemodify(path, ':e')
+        local targets = vim.tbl_contains(header_exts, ext) and source_exts or header_exts
+        local names = vim.tbl_map(function(e) return stem .. '.' .. e end, targets)
+        local found = vim.fs.find(names, { path = vim.fs.dirname(path), limit = 1 })[1]
+          or vim.fs.find(names, { path = vim.fn.getcwd(), type = 'file', limit = 1 })[1]
+        if found then
+          vim.cmd.edit(vim.fn.fnameescape(found))
+        else
+          vim.notify('No matching source/header for ' .. stem, vim.log.levels.WARN)
+        end
+      end, { buffer = args.buf, desc = 'Switch source/[H]eader' })
     end,
   })
 
@@ -1108,7 +1220,7 @@ do
     end,
   })
 
-  -- :CMakeConfigure [build type] – configure <root>/build with Ninja and export compile_commands.json for clangd
+  -- :CMakeConfigure [build type] – configure <root>/build with Ninja and export compile_commands.json
   vim.api.nvim_create_user_command('CMakeConfigure', function(opts)
     local root = current_cmake_root()
     if not root then return end
@@ -1119,8 +1231,7 @@ do
       vim.schedule(function()
         if res.code == 0 then
           vim.notify 'CMake configure finished'
-          -- Restart clangd so it picks up the new compile_commands.json
-          if #vim.lsp.get_clients { name = 'clangd' } > 0 then vim.cmd 'lsp restart clangd' end
+          vim.api.nvim_exec_autocmds('User', { pattern = 'CMakeConfigured', data = { build = root .. '/build' } })
         else
           vim.notify('CMake configure failed:\n' .. (res.stderr or ''), vim.log.levels.ERROR)
         end
